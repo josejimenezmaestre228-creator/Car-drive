@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<title>DriveZone Pro - GymMaster Labs</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<style>
+  html,body { height:100%; margin:0; background:#0b0b0b; font-family: Arial, Helvetica, sans-serif; -webkit-user-select:none; user-select:none;}
+  #game-container { width:100%; height:100vh; position:relative; overflow:hidden; }
+  /* HUD */
+  .hud { position:absolute; left:12px; top:12px; color:#fff; z-index:1000; text-shadow:0 1px 2px rgba(0,0,0,.7) }
+  .hud .row { margin-bottom:6px; }
+  .hud .speed { font-size:20px; font-weight:bold; }
+  .hud .small { font-size:13px; opacity:.9; }
+  .controls { position:absolute; right:12px; bottom:12px; z-index:1000; color:#fff; }
+  .controls .btn { display:inline-block; padding:8px 12px; background:#ff6f61; color:#fff; border-radius:6px; margin-left:6px; cursor:pointer; }
+  .mini { position:absolute; right:12px; top:12px; width:140px; height:140px; background:rgba(0,0,0,0.35); border-radius:8px; padding:8px; z-index:1000; color:#fff; font-size:12px;}
+  .menu, .overlay { position:absolute; z-index:2000; left:0; top:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; }
+  .menu .panel { background:linear-gradient(180deg,#222,#111); color:#fff; padding:20px; border-radius:12px; width:92%; max-width:420px; box-shadow:0 10px 40px rgba(0,0,0,.6); text-align:center;}
+  .menu h1 { margin:0 0 12px; font-size:22px; }
+  .menu .muted { color:#ccc; font-size:13px; margin-bottom:12px; }
+  .menu .btn { margin:8px 6px; padding:10px 14px; background:#ff6f61; border-radius:8px; color:#fff; display:inline-block; cursor:pointer; }
+  .shop-grid { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; margin-top:12px; }
+  .shop-item { width:100px; background:#1b1b1b; border-radius:8px; padding:6px; text-align:center; }
+  .stat { font-weight:bold; color:#ffecb3; }
+  footer { position:fixed; left:0; bottom:0; width:100%; text-align:center; color:#888; font-size:12px; padding:8px; z-index:1000; }
+  @media (max-width:600px) { .menu .panel { width:94%; } .mini { width:110px; height:110px; } }
+</style>
+<!-- Phaser 3 -->
+<script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game-container"></div>
+
+  <!-- HUD -->
+  <div class="hud" id="hud">
+    <div class="row speed">Vel: <span id="speed">0</span> km/h</div>
+    <div class="row small">Vueltas: <span id="lap">0</span>/<span id="totalLaps">3</span> — Mejor vuelta: <span id="bestLap">--:--:--</span></div>
+    <div class="row small">Monedas: <span id="coins">0</span></div>
+    <div class="row small">Nitro: <span id="nitro">100</span>%</div>
+  </div>
+
+  <div class="mini" id="minimap"><canvas id="minimap-canvas" width="120" height="100"></canvas></div>
+
+  <div class="controls">
+    <div class="btn" id="btn-nitro">Nitro</div>
+    <div class="btn" id="btn-reset">Reset</div>
+    <div style="height:6px"></div>
+    <div class="btn" id="btn-pause">Pausa</div>
+  </div>
+
+  <div class="menu overlay" id="menu">
+    <div class="panel">
+      <h1>DriveZone Pro</h1>
+      <div class="muted">Selecciona coche, luego START para jugar</div>
+      <div id="car-selection" style="display:flex; gap:8px; justify-content:center; margin-bottom:10px;">
+        <!-- car previews inserted here -->
+      </div>
+      <div>
+        <button class="btn" id="btn-start">START</button>
+        <button class="btn" id="btn-shop">Tienda</button>
+        <button class="btn" id="btn-reset-data">Reset Datos</button>
+      </div>
+      <div style="margin-top:12px; color:#ccc; font-size:12px;">Controles: W/A/S/D o flechas. Nitro en pantalla o tecla N.</div>
+    </div>
+  </div>
+
+  <div class="menu overlay" id="shop" style="display:none; pointer-events:auto;">
+    <div class="panel">
+      <h1>Tienda</h1>
+      <div class="muted">Compra skins con monedas recogidas</div>
+      <div id="shop-grid" class="shop-grid"></div>
+      <div style="margin-top:12px;">
+        <button class="btn" id="btn-shop-back">Volver</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>DriveZone Pro — Demo creada por GymMaster Labs</footer>
+
+<script>
+/* ---------------------------
+  DRIVEZONE PRO - Phaser 3 game
+   - Enhanced features: car selection, shop, laps, nitro, particles, minimap, collisions, coins
+   - Save to localStorage: coins, bestLap, selectedSkin
+   - No external audio files: use WebAudio synth (simple tones) for effects
+   - Single-file for easy deploy
+----------------------------*/
+
+// Basic config
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game-container',
+  width: window.innerWidth,
+  height: window.innerHeight,
+  backgroundColor: 0x1b1b1b,
+  physics: { default: 'arcade', arcade: { debug: false } },
+  scene: { preload, create, update }
+};
+const game = new Phaser.Game(config);
+
+// Globals
+let player, cursors, nitro=100, nitroActive=false, coins=0;
+let minimapCanvas, minimapCtx, worldW=4000, worldH=2500;
+let laps = 0, totalLaps = 3, lapStartTime = 0, bestLap = null;
+let coinsTextEl, speedEl, nitroEl, lapEl, bestLapEl;
+let selectedSkin = null;
+let skins = [
+  { id:'blue', color:0x0074d9, price:0, name:'Azul' },
+  { id:'red', color:0xd7263d, price:100, name:'Rojo' },
+  { id:'green', color:0x2ecc71, price:200, name:'Verde' }
+];
+
+// Simple WebAudio synth for sound effects (engine, beep, crash)
+let audioCtx, engineOsc, engineGain;
+
+// Utilities localStorage keys
+const LS = { coins:'dz_coins_v1', bestLap:'dz_best_v1', skin:'dz_skin_v1' };
+
+// Preload (no external assets required)
+function preload() {
+  // nothing to load, we'll draw shapes
+}
+
+// Create scene
+function create() {
+  const scene = this;
+  // restore state
+  coins = parseInt(localStorage.getItem(LS.coins) || '0');
+  selectedSkin = localStorage.getItem(LS.skin) || 'blue';
+  bestLap = localStorage.getItem(LS.bestLap) || null;
+
+  // add big background pattern
+  const bg = scene.add.tileSprite(0,0,worldW,worldH, null).setOrigin(0);
+  // We'll draw manual ground using graphics to keep single-file
+  const g = scene.add.graphics();
+  g.fillStyle(0x2c3e50,1);
+  g.fillRect(0,0,worldW,worldH);
+
+  // Create a looped track as polygon path - outer & inner
+  drawTrack(scene);
+
+  // group obstacles
+  const obstacles = scene.physics.add.staticGroup();
+  for (let i=0;i<90;i++){
+    const ox = Phaser.Math.Between(200, worldW-200);
+    const oy = Phaser.Math.Between(200, worldH-200);
+    const rect = scene.add.rectangle(ox, oy, Phaser.Math.Between(24,48), Phaser.Math.Between(24,48), 0xff9900);
+    scene.physics.add.existing(rect, true);
+    obstacles.add(rect);
+  }
+
+  // coins (collectable)
+  const coinGroup = scene.physics.add.group();
+  for (let i=0;i<75;i++){
+    const cx = Phaser.Math.Between(250, worldW-250);
+    const cy = Phaser.Math.Between(250, worldH-250);
+    const coin = scene.add.circle(cx, cy, 8, 0xFFD700);
+    scene.physics.add.existing(coin, true);
+    coinGroup.add(coin);
+  }
+
+  // create car container
+  player = scene.add.container(worldW/2, worldH/2);
+  // body
+  const bodyRect = scene.add.rectangle(0,0,56,32, 0x0074d9).setOrigin(0.5);
+  const wind = scene.add.triangle(0,-6,-14,8,14,8,0x89CFF0).setAlpha(0.95);
+  player.add([bodyRect, wind]);
+  scene.physics.world.enable(player);
+  player.body.setCollideWorldBounds(true);
+  player.body.setDrag(80,80);
+  player.body.setMaxSpeed(700);
+
+  // set skin color
+  applySkinToPlayer(player, selectedSkin);
+
+  // camera settings
+  scene.cameras.main.startFollow(player, true, 0.12, 0.12);
+  scene.cameras.main.setBounds(0,0,worldW,worldH);
+
+  // collisions
+  scene.physics.add.collider(player, obstacles, (p,o)=>{ crashEffect(scene, o); }, null, scene);
+
+  // overlap collector for coins
+  scene.physics.add.overlap(player, coinGroup, (p, coin)=> {
+    try {
+      coin.destroy();
+      coins += 5;
+      saveCoins();
+      updateHUD();
+      playBeep(900, 0.06);
+    } catch(e){}
+  });
+
+  // cursors
+  cursors = scene.input.keyboard.createCursorKeys();
+  scene.input.keyboard.addKeys('W,A,S,D,N');
+
+  // particle trail
+  const particles = scene.add.particles('pixel');
+  const emitter = particles.createEmitter({
+    x: 0, y:0, lifespan: 300, quantity: 1, scale:{start:0.6, end:0},
+    speed: { min: -30, max: -80 }, on:false
+  });
+  player.emitter = emitter;
+
+  // HUD elements
+  speedEl = document.getElementById('speed');
+  nitroEl = document.getElementById('nitro');
+  lapEl = document.getElementById('lap');
+  bestLapEl = document.getElementById('bestLap');
+  coinsTextEl = document.getElementById('coins');
+  document.getElementById('totalLaps').innerText = totalLaps;
+  if (bestLap) bestLapEl.innerText = formatTime(bestLap);
+
+  updateHUD();
+
+  // minimap
+  minimapCanvas = document.getElementById('minimap-canvas');
+  minimapCtx = minimapCanvas.getContext('2d');
+  drawMinimap(scene, coinGroup, obstacles);
+
+  // touch buttons
+  document.getElementById('btn-nitro').addEventListener('pointerdown', ()=> activateNitro(true));
+  document.getElementById('btn-nitro').addEventListener('pointerup', ()=> activateNitro(false));
+  document.getElementById('btn-reset').addEventListener('click', ()=> resetCar());
+  document.getElementById('btn-pause').addEventListener('click', ()=> togglePause(scene));
+
+  // menu actions
+  document.getElementById('btn-start').addEventListener('click', ()=> {
+    document.getElementById('menu').style.display='none';
+    lapStartTime = performance.now();
+    playBeep(800, 0.08);
+  });
+  document.getElementById('btn-shop').addEventListener('click', ()=> openShop());
+  document.getElementById('btn-shop-back').addEventListener('click', ()=> closeShop());
+  document.getElementById('btn-reset-data').addEventListener('click', ()=> resetData());
+
+  // fill car-selection UI and shop UI
+  populateCarSelection();
+  populateShop();
+
+  // audio init
+  initAudio();
+
+  // engine sound tone start
+  startEngineTone();
+}
+
+// Update loop
+function update(time, delta) {
+  const scene = this;
+  if (!player || !player.body) return;
+
+  const body = player.body;
+  // read keys
+  const up = cursors.up.isDown || scene.input.keyboard.keys[87].isDown;
+  const down = cursors.down.isDown || scene.input.keyboard.keys[83].isDown;
+  const left = cursors.left.isDown || scene.input.keyboard.keys[65].isDown;
+  const right = cursors.right.isDown || scene.input.keyboard.keys[68].isDown;
+  const nitroKey = scene.input.keyboard.keys[78].isDown; // N
+
+  if (nitroKey) activateNitro(true); else if (!document.pointerLockElement) {/*noop*/}
+
+  // steering sensitivity depends on speed
+  const vel = Math.hypot(body.velocity.x, body.velocity.y);
+  const speedFactor = Phaser.Math.Clamp(1 - (vel/800), 0.12, 1);
+  const rotSpeed = 0.003 * delta * (speedFactor*1.8);
+
+  if (left) player.rotation -= rotSpeed;
+  if (right) player.rotation += rotSpeed;
+
+  // thrust/responsiveness
+  if (up) {
+    // apply velocity in facing direction
+    const thrust = nitroActive ? 0.55 : 0.28;
+    this.physics.velocityFromRotation(player.rotation, thrust * delta, body.velocity);
+    if (player.emitter) {
+      player.emitter.on = true;
+      player.emitter.setPosition(player.x - Math.cos(player.rotation)*28, player.y - Math.sin(player.rotation)*28);
+    }
+  } else {
+    if (player.emitter) player.emitter.on = false;
+  }
+  if (down) {
+    this.physics.velocityFromRotation(player.rotation, -0.16 * delta, body.velocity);
+  }
+
+  // small drag
+  body.velocity.x *= 0.998;
+  body.velocity.y *= 0.998;
+
+  // calculate pseudo km/h
+  const pxPerSec = Math.hypot(body.velocity.x, body.velocity.y) * (1000/60);
+  const kmh = Math.round(pxPerSec * 0.072);
+  speedEl.innerText = kmh;
+
+  // nitro handling and recharge
+  if (nitroActive && nitro>0) {
+    nitro = Math.max(0, nitro - 0.25 * (delta/16));
+    document.getElementById('nitro').innerText = Math.round(nitro);
+    // camera effect
+    scene.cameras.main.shake(40, 0.0009 * (1 + (nitro/100)));
+  } else if (!nitroActive && nitro < 100) {
+    nitro = Math.min(100, nitro + 0.08 * (delta/16));
+    document.getElementById('nitro').innerText = Math.round(nitro);
+  }
+
+  // emitter control handled above
+
+  // update minimap
+  updateMinimap();
+
+  // lap detection: simple rectangle crossing -> if cross start line increment lap
+  checkLapProgress(scene);
+
+  // engine pitch adjust
+  updateEngineTone(kmh);
+}
+
+// ---------- Helper functions ----------
+
+function applySkinToPlayer(container, skinId) {
+  const skin = skins.find(s=>s.id===skinId) || skins[0];
+  const rect = container.list.find(i => i.type==='Rectangle');
+  if (rect) rect.fillColor = skin.color;
+}
+
+function initAudio() {
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  } catch(e) {
+    audioCtx = null;
+  }
+}
+
+function playBeep(freq=600, time=0.08) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'sine';
+  o.frequency.value = freq;
+  g.gain.value = 0.08;
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start();
+  setTimeout(()=>{ o.stop(); }, time*1000);
+}
+
+function startEngineTone() {
+  if (!audioCtx) return;
+  if (engineOsc) engineOsc.stop();
+  engineOsc = audioCtx.createOscillator();
+  engineGain = audioCtx.createGain();
+  engineOsc.type = 'sawtooth';
+  engineOsc.frequency.value = 80;
+  engineGain.gain.value = 0.0005;
+  engineOsc.connect(engineGain); engineGain.connect(audioCtx.destination);
+  engineOsc.start();
+}
+function updateEngineTone(kmh) {
+  if (!engineOsc || !engineGain) return;
+  const freq = 80 + Math.min(800, kmh * 2.5);
+  engineOsc.frequency.value = freq;
+  engineGain.gain.value = 0.0005 + Math.min(0.02, kmh/2000);
+}
+
+function crashEffect(scene, obstacle) {
+  playBeep(160, 0.14);
+  // bounce back
+  try {
+    const b = player.body;
+    b.setVelocity(b.velocity.x * -0.45, b.velocity.y * -0.45);
+    scene.cameras.main.shake(250, 0.012);
+  } catch(e){}
+}
+
+function resetCar() {
+  player.x = worldW/2; player.y = worldH/2; player.body.setVelocity(0,0); player.rotation = 0;
+  lapStartTime = performance.now();
+}
+
+function activateNitro(on) {
+  nitroActive = on && nitro > 2;
+  if (!on) {
+    // start small recharge handled by update loop
+  } else {
+    playBeep(1200, 0.06);
+  }
+}
+
+function togglePause(scene) {
+  if (scene.scene.isPaused()) {
+    scene.scene.resume();
+    document.getElementById('menu').style.display = 'none';
+  } else {
+    scene.scene.pause();
+    document.getElementById('menu').style.display = 'flex';
+  }
+}
+
+// DRAW TRACK: approximate loop with inner & outer rectangles + checkpoints
+function drawTrack(scene) {
+  const gr = scene.add.graphics();
+  // grass
+  gr.fillStyle(0x133318,1); gr.fillRect(0,0,worldW,worldH);
+  // outer road
+  const outer = {x:120,y:120,w:worldW-240,h:worldH-240,r:120};
+  drawRoundedRectGraphics(gr, outer.x, outer.y, outer.w, outer.h, outer.r, 0x4b4b4b);
+  // inner hole
+  const inner = {x:outer.x+420, y:outer.y+320, w:outer.w-840, h:outer.h-640, r:80};
+  drawRoundedRectGraphics(gr, inner.x, inner.y, inner.w, inner.h, inner.r, 0x133318);
+  // paint dashed center line (simple)
+  const lineColor = 0xffd54f;
+  paintDashedCenter(gr, outer, inner);
+  gr.setDepth(-100);
+  // start/finish line rectangle
+  const sx = outer.x + 40, sy = outer.y + 10;
+  scene.add.rectangle(sx+6, sy+6, 8, outer.h-20, 0xffffff);
+  // place invisible checkpoint rectangles around the loop for lap detection
+  setupCheckpoints(scene, outer, inner);
+}
+
+// helper draw functions
+function drawRoundedRectGraphics(g, x, y, w, h, r, color) {
+  g.fillStyle(color,1);
+  g.fillRoundedRect(x,y,w,h,r);
+}
+
+function paintDashedCenter(g, outer, inner) {
+  g.lineStyle(4, 0xffd54f, 0.85);
+  const offset = 60;
+  const sx = outer.x + offset;
+  const sy = outer.y + offset;
+  const ex = outer.x + outer.w - offset;
+  const ey = outer.y + outer.h - offset;
+  // top
+  for (let x=sx; x<ex; x+=48) g.strokeLineShape(new Phaser.Geom.Line(x, sy, x+24, sy));
+  for (let y=sy; y<ey; y+=48) g.strokeLineShape(new Phaser.Geom.Line(ex, y, ex, y+24));
+  for (let x=ex; x>sx; x-=48) g.strokeLineShape(new Phaser.Geom.Line(x, ey, x-24, ey));
+  for (let y=ey; y>sy; y-=48) g.strokeLineShape(new Phaser.Geom.Line(sx, y, sx, y-24));
+}
+
+// checkpoints & lap logic
+let checkpoints = [], checkpointIndex = 0;
+function setupCheckpoints(scene, outer, inner) {
+  checkpoints = [];
+  checkpointIndex = 0;
+  // create 4 checkpoints at midpoints of each side
+  const offset = 60;
+  const sx = outer.x + offset, sy = outer.y + offset;
+  const ex = outer.x + outer.w - offset, ey = outer.y + outer.h - offset;
+  const points = [
+    {x: (sx+ex)/2, y: sy-10},   // top
+    {x: ex+10, y: (sy+ey)/2},   // right
+    {x: (sx+ex)/2, y: ey+10},   // bottom
+    {x: sx-10, y: (sy+ey)/2}    // left
+  ];
+  points.forEach((p,i)=>{
+    const rect = scene.add.rectangle(p.x, p.y, 140, 30, 0xffffff, 0.0001).setOrigin(0.5);
+    scene.physics.add.existing(rect, true);
+    rect.checkIndex = i;
+    checkpoints.push(rect);
+    // visualize lightly (for debugging you can set alpha)
+    // scene.add.rectangle(p.x, p.y, 140, 30, 0x00ff00, 0.05);
+  });
+  // detector overlaps
+  checkpoints.forEach(cp=>{
+    scene.physics.add.overlap(player, cp, ()=> {
+      if (cp.checkIndex === checkpointIndex) {
+        checkpointIndex = (checkpointIndex + 1) % checkpoints.length;
+        if (checkpointIndex === 0) { // full lap done
+          const now = performance.now();
+          const lapTime = now - lapStartTime;
+          lapStartTime = now;
+          laps++;
+          updateLap(lapTime);
+        }
+      }
+    }, null, scene);
+  });
+}
+
+function updateLap(ms) {
+  // update laps count and UI; save best lap
+  const sec = ms/1000;
+  const prevBest = bestLap ? parseFloat(bestLap) : null;
+  if (!prevBest || sec < prevBest) {
+    bestLap = sec.toFixed(3);
+    localStorage.setItem(LS.bestLap, bestLap);
+    document.getElementById('bestLap').innerText = formatTime(bestLap);
+    playBeep(1200,0.1);
+  } else {
+    playBeep(700,0.06);
+  }
+  document.getElementById('lap').innerText = Math.min(laps, totalLaps);
+  // award coins for lap
+  coins += 50;
+  saveCoins();
+  updateHUD();
+  if (laps >= totalLaps) {
+    // finish race
+    showFinishOverlay();
+  }
+}
+
+// finish overlay
+function showFinishOverlay() {
+  const overlay = document.createElement('div');
+  overlay.style.position='fixed'; overlay.style.left='0'; overlay.style.top='0'; overlay.style.width='100%'; overlay.style.height='100%';
+  overlay.style.background='rgba(0,0,0,0.7)'; overlay.style.zIndex='3000'; overlay.style.display='flex'; overlay.style.alignItems='center'; overlay.style.justifyContent='center';
+  const panel = document.createElement('div'); panel.style.background='#111'; panel.style.color='#fff'; panel.style.padding='20px'; panel.style.borderRadius='10px'; panel.style.textAlign='center';
+  panel.innerHTML = `<h2>¡Carrera completada!</h2><p>Vueltas: ${laps}/${totalLaps}</p><p>Mejor vuelta: ${bestLap?formatTime(bestLap):'--'}</p><div style="margin-top:12px"><button id="btn-retry" class="btn">Reintentar</button> <button id="btn-backmenu" class="btn">Volver menú</button></div>`;
+  overlay.appendChild(panel); document.body.appendChild(overlay);
+  document.getElementById('btn-retry').addEventListener('click', ()=>{ location.reload(); });
+  document.getElementById('btn-backmenu').addEventListener('click', ()=>{ location.reload(); });
+}
+
+function formatTime(secStr) {
+  const sec = parseFloat(secStr);
+  if (isNaN(sec)) return '--:--
